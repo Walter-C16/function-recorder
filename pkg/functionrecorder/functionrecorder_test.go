@@ -2,15 +2,18 @@ package functionrecorder
 
 import "testing"
 
-type TestInnerStruct struct {
+type B struct {
 	id          int
 	AccountCode string
 }
 
-type TestStruct struct {
+type A struct {
 	ID                   string
-	PersonalInformation  TestInnerStruct
-	PersonalInformation2 TestInnerStruct
+	TestInnerStruct      B
+	TestInnerEmptyStruct B
+	TestInnerStructPtr   *B
+	TestSlice            []string
+	TestNilSlice         []string
 }
 
 func TestFunctionRecorder_Record(t *testing.T) {
@@ -21,14 +24,19 @@ func TestFunctionRecorder_Record(t *testing.T) {
 	}{
 		{
 			name:     "Test",
-			function: func(t TestStruct) TestStruct { return t },
+			function: func(t A) A { return t },
 			args: []interface{}{
-				TestStruct{
+				A{
 					ID: "hello",
-					PersonalInformation: TestInnerStruct{
+					TestInnerStruct: B{
 						id:          1234,
 						AccountCode: "codeRed",
 					},
+					TestInnerStructPtr: &B{
+						id:          1234,
+						AccountCode: "codeRed",
+					},
+					TestSlice: []string{"1", "hola mundo"},
 				},
 			},
 		},

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"unicode"
 	"unsafe"
 )
@@ -13,25 +14,13 @@ type FunctionRecorder struct {
 }
 
 const (
-	Invalid int = iota
-	Bool
-	Numeric
-	Complex64
-	Complex128
-	Array
-	Chan
-	Func
-	Interface
-	Map
-	Ptr
-	Slice
-	String
-	Struct
-	UnsafePointer
+	_stringPattern  = "%s%s: \"%s\","
+	_numericPattern = "%s%s: %s,"
 )
 
 const (
-	_stringPattern = ""
+	_numeric = iota
+	_string
 )
 
 func NewFunctionRecorder(recordArguments, recordReturnedValues bool) FunctionRecorder {
@@ -54,7 +43,7 @@ func (fr FunctionRecorder) Record(function interface{}, args ...interface{}) {
 
 		for i := range args {
 			value := reflect.ValueOf(args[i])
-			handleValue(args[i], "", value.Kind(), 0, i == argsLength-1)
+			handleValue(args[i], value.Kind().String(), value.Type().Name(), value.Kind(), 0, i == argsLength-1)
 		}
 	}
 
@@ -64,87 +53,102 @@ func (fr FunctionRecorder) Record(function interface{}, args ...interface{}) {
 
 		for i := range returns {
 			value := reflect.ValueOf(args[i])
-			handleValue(args[i], "", value.Kind(), 0, i == returnsLength-1)
+			handleValue(args[i], value.Kind().String(), value.Type().Name(), value.Kind(), 0, i == returnsLength-1)
 		}
 	}
 }
 
-func handleValue(v interface{}, name string, kind reflect.Kind, level int, isLastValue bool) {
+func handleValue(value interface{}, valueName, valueType string, kind reflect.Kind, level int, isSliceMember bool) {
 	switch kind {
 	case reflect.Struct:
-		vValue := reflect.ValueOf(v)
-		handleStruct(v, vValue.Kind().String(), vValue.Type().Name(), level, isLastValue)
+		handleStruct(value, valueName, valueType, level)
 	case reflect.String:
-		printValues(reflect.ValueOf(v).Interface().(string), "", String, level, isLastValue)
+		print(value.(string), valueName, _string, level, isSliceMember)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64:
+		print(strconv.Itoa(value.(int)), valueName, _numeric, level, isSliceMember)
+	case reflect.Ptr:
+		handlePtr(value, valueName, valueType, level)
+	case reflect.Array, reflect.Slice:
+		handleSlice(value, valueName, level)
 	}
 }
 
-func handleStruct(st interface{}, fieldName, structName string, level int, isStructLastFieldOrLastValue bool) {
-	v := reflect.ValueOf(st)
-	numField := v.NumField()
+func handleSlice(slice interface{}, sliceName string, level int) {
+	items := reflect.ValueOf(slice)
 	tabbedString := getTabbedString(level)
+	sliceLength := items.Len()
 
-	if fieldName != "" {
-		fmt.Printf("%s%s: %s {\n", tabbedString, fieldName, structName)
-	} else {
-		fmt.Printf("%s{\n", tabbedString)
+	if sliceLength == 0 {
+		fmt.Printf("%s%s: []%s{},\n", tabbedString, sliceName, reflect.TypeOf(slice).Elem().String())
+		return
 	}
 
+	fmt.Printf("%s%s: []%s{\n", tabbedString, sliceName, reflect.TypeOf(slice).Elem().String())
+
+	for i := 0; i < sliceLength; i++ {
+		item := items.Index(i)
+		handleValue(item.Interface(), "", "", item.Kind(), level+1, true)
+	}
+
+	fmt.Printf("%s},\n", tabbedString)
+}
+
+func handlePtr(ptr interface{}, ptrName, ptrType string, level int) {
+	ptrValue := reflect.ValueOf(ptr).Elem()
+
+	if ptrValue.IsValid() {
+		handleValue(ptrValue.Interface(), ptrName, "&"+ptrValue.Type().Name(), ptrValue.Kind(), level, false)
+	}
+}
+
+func handleStruct(st interface{}, structName, structType string, level int) {
+	structValue := reflect.ValueOf(st)
+	numField := structValue.NumField()
+	tabbedString := getTabbedString(level)
+
+	if numField == 0 {
+		fmt.Printf("%s%s: %s {},\n", tabbedString, structName, structType)
+		return
+	}
+
+	fmt.Printf("%s%s: %s {\n", tabbedString, structName, structType)
+
 	for i := 0; i < numField; i++ {
-		field := v.Field(i)
-		fieldName := v.Type().Field(i).Name
+		field := structValue.Field(i)
+		fieldName := structValue.Type().Field(i).Name
 
 		for _, c := range fieldName {
 			if unicode.IsLower(c) {
-				vCopy := reflect.New(v.Type()).Elem()
-				vCopy.Set(v)
-				fieldTemp := vCopy.Field(i)
+				structValueCopy := reflect.New(structValue.Type()).Elem()
+				structValueCopy.Set(structValue)
+				fieldTemp := structValueCopy.Field(i)
 				field = reflect.NewAt(fieldTemp.Type(), unsafe.Pointer(fieldTemp.UnsafeAddr())).Elem()
 			}
 
 			break
 		}
 
-		switch field.Kind() {
-		case reflect.Struct:
-			handleStruct(field.Interface(), fieldName, field.Type().Name(), level+1, i == numField-1)
-		case reflect.String:
-			printValues(field.Interface().(string), fieldName, String, level+1, i == numField-1)
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64:
-			printValues(strconv.Itoa(field.Interface().(int)), fieldName, Numeric, level+1, i == numField-1)
-		}
+		handleValue(field.Interface(), fieldName, field.Type().Name(), field.Kind(), level+1, false)
 	}
 
-	stTrailingToPrint := fmt.Sprintf("%s}", tabbedString)
-
-	if !isStructLastFieldOrLastValue {
-		stTrailingToPrint = stTrailingToPrint + ","
-	}
-
-	fmt.Println(stTrailingToPrint)
+	fmt.Printf("%s},\n", tabbedString)
 }
 
-func printValues(value, fieldName string, valueType, level int, isStructLastFieldOrLastValue bool) {
-	var strToPrint string
+func print(value, valueName string, valueType, level int, isSliceMember bool) {
+	var strToPrint, pattern string
 	tabbedString := getTabbedString(level)
 
 	switch valueType {
-	case String:
-		if fieldName != "" {
-			strToPrint = fmt.Sprintf("%s%s: \"%s\"", tabbedString, fieldName, value)
-		} else {
-			strToPrint = fmt.Sprintf("%s\"%s\"", tabbedString, value)
-		}
-	case Numeric:
-		if fieldName != "" {
-			strToPrint = fmt.Sprintf("%s%s: %s", tabbedString, fieldName, value)
-		} else {
-			strToPrint = fmt.Sprintf("%s%s", tabbedString, value)
-		}
+	case _numeric:
+		pattern = _numericPattern
+	case _string:
+		pattern = _stringPattern
 	}
 
-	if !isStructLastFieldOrLastValue {
-		strToPrint = strToPrint + ","
+	strToPrint = fmt.Sprintf(pattern, tabbedString, valueName, value)
+
+	if isSliceMember {
+		strToPrint = strings.Replace(strToPrint, ": ", "", 1)
 	}
 
 	fmt.Println(strToPrint)

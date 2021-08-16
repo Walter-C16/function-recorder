@@ -3,10 +3,7 @@ package functionrecorder
 import (
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
-	"unicode"
-	"unsafe"
 )
 
 type FunctionRecorder struct {
@@ -14,13 +11,16 @@ type FunctionRecorder struct {
 }
 
 const (
-	_stringPattern  = "%s%s: \"%s\","
-	_numericPattern = "%s%s: %s,"
-)
-
-const (
-	_numeric = iota
-	_string
+	stringPattern      = "%s%s: \"%s\",\n"
+	intPattern         = "%s%s: %d,\n"
+	arrayPattern       = "%s%s: [%d]%s{\n"
+	emptyArrayPattern  = "%s%s: [0]%s{},\n"
+	slicePattern       = "%s%s: []%s{\n"
+	emptySlicePattern  = "%s%s: []%s{},\n"
+	structPattern      = "%s%s: %s{\n"
+	emptyStructPattern = "%s%s: %s{},\n"
+	mapPattern         = "%s%s: %s{\n"
+	emptyMapPattern    = "%s%s: %s{},\n"
 )
 
 func NewFunctionRecorder(recordArguments, recordReturnedValues bool) FunctionRecorder {
@@ -28,6 +28,12 @@ func NewFunctionRecorder(recordArguments, recordReturnedValues bool) FunctionRec
 }
 
 func (fr FunctionRecorder) Record(function interface{}, args ...interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Print("Recovered: ")
+			fmt.Println(r)
+		}
+	}()
 
 	a := make([]reflect.Value, len(args))
 
@@ -39,124 +45,137 @@ func (fr FunctionRecorder) Record(function interface{}, args ...interface{}) {
 
 	if fr.recordArguments {
 		fmt.Println("Arguments:")
-		argsLength := len(args)
-
-		for i := range args {
-			value := reflect.ValueOf(args[i])
-			handleValue(args[i], value.Kind().String(), value.Type().Name(), value.Kind(), 0, i == argsLength-1)
-		}
+		printTrees(getTrees(args))
 	}
 
 	if fr.recordReturnedValues {
-		fmt.Println("Returned values:")
-		returnsLength := len(returns)
+		fmt.Println("Returns:")
+		r := make([]interface{}, len(returns))
 
 		for i := range returns {
-			value := reflect.ValueOf(args[i])
-			handleValue(args[i], value.Kind().String(), value.Type().Name(), value.Kind(), 0, i == returnsLength-1)
+			r[i] = returns[i].Interface()
 		}
+
+		printTrees(getTrees(r))
 	}
 }
 
-func handleValue(value interface{}, valueName, valueType string, kind reflect.Kind, level int, isSliceMember bool) {
-	switch kind {
+func getTrees(values []interface{}) []*valueTree {
+	numberOfValues := len(values)
+	argumentTrees := make([]*valueTree, 0, numberOfValues)
+	ch := make(chan *valueTree, numberOfValues)
+
+	for i := range values {
+		go buildTree(values[i], ch)
+	}
+
+	for t := range ch {
+		argumentTrees = append(argumentTrees, t)
+
+		if len(argumentTrees) == numberOfValues {
+			close(ch)
+		}
+	}
+
+	return argumentTrees
+}
+
+func printTrees(trees []*valueTree) {
+	var output strings.Builder
+	for i := range trees {
+		if trees[i].root == nil {
+			continue
+		}
+
+		trees[i].root.name = trees[i].root.dataKind.String()
+		printNode(&output, trees[i].root, 0)
+	}
+
+	fmt.Println(output.String())
+}
+
+func printNode(s *strings.Builder, n *node, level int) {
+	switch n.dataKind {
+	case reflect.String, reflect.Int, reflect.Float32, reflect.Float64, reflect.Int16, reflect.Int32,
+		reflect.Int64, reflect.Int8, reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint8, reflect.Bool:
+		printPrimitive(s, n, level)
+	case reflect.Array, reflect.Slice, reflect.Struct, reflect.Map:
+		printComposite(s, n, level)
+	default:
+		for i := range n.children {
+			printNode(s, n.children[i], level+1)
+		}
+	}
+
+	if n.associatedNode != nil {
+		printNode(s, n.associatedNode, level)
+	}
+}
+
+func printComposite(s *strings.Builder, n *node, level int) {
+	var emptyPattern, pattern string
+	tabbedString := getTabbedString(level)
+
+	switch n.dataKind {
+	case reflect.Array:
+		pattern = arrayPattern
+		emptyPattern = emptyArrayPattern
+	case reflect.Slice:
+		pattern = slicePattern
+		emptyPattern = emptySlicePattern
 	case reflect.Struct:
-		handleStruct(value, valueName, valueType, level)
+		pattern = structPattern
+		emptyPattern = emptyStructPattern
+	case reflect.Map:
+		pattern = mapPattern
+		emptyPattern = emptyMapPattern
+	}
+
+	if len(n.children) == 0 {
+		s.WriteString(fmt.Sprintf(emptyPattern, tabbedString, n.name, n.dataType))
+		return
+	}
+
+	if n.dataKind == reflect.Array {
+		s.WriteString(fmt.Sprintf(pattern, tabbedString, n.name, len(n.children), n.dataType))
+	} else {
+		s.WriteString(fmt.Sprintf(pattern, tabbedString, n.name, n.dataType))
+	}
+
+	for i := range n.children {
+		printNode(s, n.children[i], level+1)
+	}
+
+	s.WriteString(fmt.Sprintf("%s},\n", tabbedString))
+}
+
+func printPrimitive(s *strings.Builder, n *node, level int) {
+	var str, pattern string
+
+	switch n.dataKind {
 	case reflect.String:
-		print(value.(string), valueName, _string, level, isSliceMember)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64:
-		print(strconv.Itoa(value.(int)), valueName, _numeric, level, isSliceMember)
-	case reflect.Ptr:
-		handlePtr(value, valueName, valueType, level)
-	case reflect.Array, reflect.Slice:
-		handleSlice(value, valueName, level)
+		pattern = stringPattern
+	case reflect.Int:
+		pattern = intPattern
 	}
+
+	str = fmt.Sprintf(pattern, getTabbedString(level), n.name, n.data)
+
+	switch {
+	case n.isMapKey:
+		str = strings.Replace(strings.Replace(str, ": ", "", 1), ",\n", " : ", 1)
+	case n.isMapValue:
+		str = strings.Replace(strings.Replace(str, ": ", "", 1), getTabbedString(level), "", 1)
+	case n.isSliceMember:
+		str = strings.Replace(str, ": ", "", 1)
+	}
+
+	s.WriteString(str)
 }
 
-func handleSlice(slice interface{}, sliceName string, level int) {
-	items := reflect.ValueOf(slice)
-	tabbedString := getTabbedString(level)
-	sliceLength := items.Len()
-
-	if sliceLength == 0 {
-		fmt.Printf("%s%s: []%s{},\n", tabbedString, sliceName, reflect.TypeOf(slice).Elem().String())
-		return
-	}
-
-	fmt.Printf("%s%s: []%s{\n", tabbedString, sliceName, reflect.TypeOf(slice).Elem().String())
-
-	for i := 0; i < sliceLength; i++ {
-		item := items.Index(i)
-		handleValue(item.Interface(), "", "", item.Kind(), level+1, true)
-	}
-
-	fmt.Printf("%s},\n", tabbedString)
-}
-
-func handlePtr(ptr interface{}, ptrName, ptrType string, level int) {
-	ptrValue := reflect.ValueOf(ptr).Elem()
-
-	if ptrValue.IsValid() {
-		handleValue(ptrValue.Interface(), ptrName, "&"+ptrValue.Type().Name(), ptrValue.Kind(), level, false)
-	}
-}
-
-func handleStruct(st interface{}, structName, structType string, level int) {
-	structValue := reflect.ValueOf(st)
-	numField := structValue.NumField()
-	tabbedString := getTabbedString(level)
-
-	if numField == 0 {
-		fmt.Printf("%s%s: %s {},\n", tabbedString, structName, structType)
-		return
-	}
-
-	fmt.Printf("%s%s: %s {\n", tabbedString, structName, structType)
-
-	for i := 0; i < numField; i++ {
-		field := structValue.Field(i)
-		fieldName := structValue.Type().Field(i).Name
-
-		for _, c := range fieldName {
-			if unicode.IsLower(c) {
-				structValueCopy := reflect.New(structValue.Type()).Elem()
-				structValueCopy.Set(structValue)
-				fieldTemp := structValueCopy.Field(i)
-				field = reflect.NewAt(fieldTemp.Type(), unsafe.Pointer(fieldTemp.UnsafeAddr())).Elem()
-			}
-
-			break
-		}
-
-		handleValue(field.Interface(), fieldName, field.Type().Name(), field.Kind(), level+1, false)
-	}
-
-	fmt.Printf("%s},\n", tabbedString)
-}
-
-func print(value, valueName string, valueType, level int, isSliceMember bool) {
-	var strToPrint, pattern string
-	tabbedString := getTabbedString(level)
-
-	switch valueType {
-	case _numeric:
-		pattern = _numericPattern
-	case _string:
-		pattern = _stringPattern
-	}
-
-	strToPrint = fmt.Sprintf(pattern, tabbedString, valueName, value)
-
-	if isSliceMember {
-		strToPrint = strings.Replace(strToPrint, ": ", "", 1)
-	}
-
-	fmt.Println(strToPrint)
-}
-
-func getTabbedString(n int) (tabbedString string) {
-	for i := 0; i < n; i++ {
-		tabbedString = tabbedString + "\t"
+func getTabbedString(level int) (tabbedString string) {
+	for i := 0; i < level; i++ {
+		tabbedString += "\t"
 	}
 
 	return

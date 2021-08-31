@@ -3,7 +3,6 @@ package functionrecorder
 import (
 	"fmt"
 	"reflect"
-	"sync"
 	"unicode"
 	"unsafe"
 )
@@ -33,7 +32,7 @@ func (n *node) append(child *node) *node {
 	return child
 }
 
-func buildTree(root interface{}, ch chan<- *valueTree) {
+func buildTree(root interface{}) *valueTree {
 	var tree valueTree
 
 	if root != nil {
@@ -45,7 +44,7 @@ func buildTree(root interface{}, ch chan<- *valueTree) {
 		handleValue(tree.root)
 	}
 
-	ch <- &tree
+	return &tree
 }
 
 func handleValue(n *node) {
@@ -73,13 +72,16 @@ func handlePtr(n *node) {
 }
 
 func handleStruct(n *node) {
-	var wg sync.WaitGroup
 	s := reflect.ValueOf(n.data)
 	numberOfFields := s.NumField()
 
 	for i := 0; i < numberOfFields; i++ {
-		wg.Add(1)
 		item := s.Field(i)
+
+		if !item.IsValid() {
+			continue
+		}
+
 		itemName := s.Type().Field(i).Name
 
 		for _, c := range itemName {
@@ -94,34 +96,26 @@ func handleStruct(n *node) {
 		}
 
 		newNode := n.append(&node{name: itemName, dataType: item.Type().Name(), dataKind: item.Kind(), data: item.Interface()})
-
-		go func() {
-			defer wg.Done()
-			handleValue(newNode)
-		}()
+		handleValue(newNode)
 	}
-
-	wg.Wait()
 }
 
 func handleSlice(n *node) {
-	var wg sync.WaitGroup
 	s := reflect.ValueOf(n.data)
 	sLen := s.Len()
 	n.dataType = s.Type().Elem().String()
 
 	for i := 0; i < sLen; i++ {
-		wg.Add(1)
 		item := s.Index(i)
+
+		if !item.IsValid() {
+			continue
+		}
+
 		newNode := n.append(&node{dataType: item.Type().Name(), dataKind: item.Kind(), data: item.Interface(), isSliceMember: true})
 
-		go func() {
-			defer wg.Done()
-			handleValue(newNode)
-		}()
+		handleValue(newNode)
 	}
-
-	wg.Wait()
 }
 
 func handleMap(n *node) {
@@ -130,6 +124,10 @@ func handleMap(n *node) {
 	n.dataType = fmt.Sprintf("map[%s]%s", m.Type().Key().String(), m.Type().Elem().String())
 
 	for _, key := range keys {
+		if !key.IsValid() {
+			continue
+		}
+
 		keyNode := &node{
 			dataType: key.Type().Name(),
 			dataKind: key.Kind(),
@@ -140,6 +138,10 @@ func handleMap(n *node) {
 		handleValue(keyNode)
 
 		value := m.MapIndex(key)
+
+		if !value.IsValid() {
+			continue
+		}
 
 		valueNode := &node{
 			dataType:   value.Type().Name(),

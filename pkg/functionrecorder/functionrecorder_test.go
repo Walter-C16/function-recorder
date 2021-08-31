@@ -19,6 +19,20 @@ type A struct {
 	TestArray            [3]int
 	TestMap              map[int]string
 	TestNilMap           map[string]int
+	TestInt8             int8
+	TestInt16            int16
+	TestInt32            int32
+	TestInt64            int64
+	TestUint             uint
+	TestUint8            uint8
+	TestUInt16           uint16
+	TestUInt32           uint32
+	TestUInt64           uint64
+	TestBool             bool
+	TestFloat32          float32
+	TestFloat64          float64
+	TestComplex64        complex64
+	TestComplex128       complex128
 }
 
 func TestFunctionRecorder_Record(t *testing.T) {

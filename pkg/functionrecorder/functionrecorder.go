@@ -11,8 +11,8 @@ type FunctionRecorder struct {
 }
 
 const (
+	defaultPattern     = "%s%s: %v,\n"
 	stringPattern      = "%s%s: \"%s\",\n"
-	intPattern         = "%s%s: %d,\n"
 	arrayPattern       = "%s%s: [%d]%s{\n"
 	emptyArrayPattern  = "%s%s: [0]%s{},\n"
 	slicePattern       = "%s%s: []%s{\n"
@@ -63,18 +63,8 @@ func (fr FunctionRecorder) Record(function interface{}, args ...interface{}) {
 func getTrees(values []interface{}) []*valueTree {
 	numberOfValues := len(values)
 	argumentTrees := make([]*valueTree, 0, numberOfValues)
-	ch := make(chan *valueTree, numberOfValues)
-
 	for i := range values {
-		go buildTree(values[i], ch)
-	}
-
-	for t := range ch {
-		argumentTrees = append(argumentTrees, t)
-
-		if len(argumentTrees) == numberOfValues {
-			close(ch)
-		}
+		argumentTrees = append(argumentTrees, buildTree(values[i]))
 	}
 
 	return argumentTrees
@@ -96,7 +86,7 @@ func printTrees(trees []*valueTree) {
 
 func printNode(s *strings.Builder, n *node, level int) {
 	switch n.dataKind {
-	case reflect.String, reflect.Int, reflect.Float32, reflect.Float64, reflect.Int16, reflect.Int32,
+	case reflect.String, reflect.Int, reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.Int16, reflect.Int32,
 		reflect.Int64, reflect.Int8, reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint8, reflect.Bool:
 		printPrimitive(s, n, level)
 	case reflect.Array, reflect.Slice, reflect.Struct, reflect.Map:
@@ -150,13 +140,12 @@ func printComposite(s *strings.Builder, n *node, level int) {
 }
 
 func printPrimitive(s *strings.Builder, n *node, level int) {
-	var str, pattern string
+	var str string
 
-	switch n.dataKind {
-	case reflect.String:
+	pattern := defaultPattern
+
+	if n.dataKind == reflect.String {
 		pattern = stringPattern
-	case reflect.Int:
-		pattern = intPattern
 	}
 
 	str = fmt.Sprintf(pattern, getTabbedString(level), n.name, n.data)
